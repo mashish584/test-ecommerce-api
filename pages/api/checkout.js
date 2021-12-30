@@ -20,6 +20,28 @@ const getUser = async request => {
   }
 };
 
+const createStripeUser = async ({ id, email }) => {
+  const customer = await stripe.customers.create({
+    email,
+    name: email,
+    address: {
+      city: 'Kashiput',
+      country: 'India',
+      line1: 'Chamunda Vihar',
+      postal_code: 244714,
+    },
+  });
+
+  return prisma.user.update({
+    where: {
+      id,
+    },
+    data: {
+      stripe_customer_id: customer.id,
+    },
+  });
+};
+
 export default async (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({
@@ -27,13 +49,26 @@ export default async (req, res) => {
     });
   }
 
-  const user = await getUser(req);
+  let user = await getUser(req);
 
   if (!user) {
     return res
       .status(401)
       .json({ message: 'You must be signed in to do checkout.' });
   }
+
+  if (!user.stripe_customer_id) {
+    user = await createStripeUser(user);
+  }
+
+  const ephemeralKey = await stripe.ephemeralKeys.create(
+    {
+      customer: user.stripe_customer_id,
+    },
+    {
+      apiVersion: '2020-08-27',
+    },
+  );
 
   const cart = req.body?.cart || {};
   const productIds = Object.keys(cart);
@@ -60,11 +95,15 @@ export default async (req, res) => {
   //Payment Intents
   const paymentIntent = await stripe.paymentIntents.create({
     amount: total,
-    currency: 'usd',
+    currency: 'inr',
+    description: `Payment of amount $${total} for #${user.id}`,
+    customer: user.stripe_customer_id,
   });
 
   return res.status(200).json({
     publishableKey: process.env.STRIPE_PUBLIC,
     paymentIntent: paymentIntent.client_secret,
+    customer: user.stripe_customer_id,
+    ephemeralKey: ephemeralKey.secret,
   });
 };
